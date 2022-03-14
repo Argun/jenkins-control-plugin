@@ -18,9 +18,7 @@ package org.codinjutsu.tools.jenkins.security;
 
 import com.github.cliftonlabs.json_simple.JsonObject;
 import com.github.cliftonlabs.json_simple.Jsoner;
-import org.apache.commons.httpclient.HttpClient;
 import org.apache.commons.httpclient.HttpMethodBase;
-import org.apache.commons.httpclient.MultiThreadedHttpConnectionManager;
 import org.apache.commons.httpclient.URIException;
 import org.apache.commons.httpclient.methods.PostMethod;
 import org.apache.commons.httpclient.methods.multipart.FilePart;
@@ -29,6 +27,16 @@ import org.apache.commons.httpclient.methods.multipart.Part;
 import org.apache.commons.httpclient.methods.multipart.StringPart;
 import org.apache.commons.lang.StringUtils;
 import org.apache.http.HttpHeaders;
+import org.apache.http.HttpResponse;
+import org.apache.http.auth.AuthScope;
+import org.apache.http.auth.UsernamePasswordCredentials;
+import org.apache.http.client.CredentialsProvider;
+import org.apache.http.client.HttpClient;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.conn.ssl.NoopHostnameVerifier;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.impl.client.BasicCredentialsProvider;
+import org.apache.http.impl.client.HttpClients;
 import org.codinjutsu.tools.jenkins.exception.AuthenticationException;
 import org.codinjutsu.tools.jenkins.exception.ConfigurationException;
 import org.codinjutsu.tools.jenkins.model.FileParameter;
@@ -57,9 +65,18 @@ class DefaultSecurityClient implements SecurityClient {
     protected JenkinsVersion jenkinsVersion = JenkinsVersion.VERSION_1;
 
     DefaultSecurityClient(String crumbData, int connectionTimout) {
-        this.httpClient = new HttpClient(new MultiThreadedHttpConnectionManager());
+//        this.httpClient = new HttpClient(new MultiThreadedHttpConnectionManager());
+        this.httpClient = HttpClients.custom().build();
         this.crumbData = crumbData;
         this.connectionTimout = connectionTimout;
+    }
+
+    DefaultSecurityClient(String crumbData, String username, String password, int connectionTimout) {
+        this.connectionTimout = connectionTimout;
+        final CredentialsProvider provider = new BasicCredentialsProvider();
+        final AuthScope scope = new AuthScope(AuthScope.ANY_HOST, AuthScope.ANY_PORT);
+        provider.setCredentials(scope, new UsernamePasswordCredentials(username, password));
+        this.httpClient = HttpClients.custom().setDefaultCredentialsProvider(provider).setSSLHostnameVerifier(NoopHostnameVerifier.INSTANCE) .build();
     }
 
     @Nullable
@@ -124,22 +141,24 @@ class DefaultSecurityClient implements SecurityClient {
     }
 
     private void runMethod(String url, @NotNull Collection<RequestData> data, ResponseCollector responseCollector) {
-        final PostMethod post = createPost(url, data);
+        final HttpPost post = new HttpPost(url);
+        post.setEntity(new StringEntity(Jsoner.serialize(data), DefaultSecurityClient.CHARSET));
 
         if (isCrumbDataSet()) {
-            post.addRequestHeader(jenkinsVersion.getCrumbName(), crumbData);
+            post.addHeader(jenkinsVersion.getCrumbName(), crumbData);
         }
-        post.addRequestHeader(HttpHeaders.ACCEPT_LANGUAGE, "en-US,en;q=0.5");
-        post.getParams().setContentCharset(StandardCharsets.UTF_8.name());
+        post.addHeader(HttpHeaders.ACCEPT_LANGUAGE, "en-US,en;q=0.5");
+//        post.getParams().setContentCharset(StandardCharsets.UTF_8.name());
 
         try {
             httpClient.getParams().setParameter("http.socket.timeout", connectionTimout);
             httpClient.getParams().setParameter("http.connection.timeout", connectionTimout);
 
-            int statusCode = httpClient.executeMethod(post);
+            final HttpResponse res = httpClient.execute(post);
+            int statusCode = res.getStatusLine().getStatusCode();
             final String responseBody;
-            try (InputStream inputStream = post.getResponseBodyAsStream()) {
-                responseBody = IOUtils.toString(inputStream, post.getResponseCharSet());
+            try (InputStream inputStream = res.getEntity().getContent()) {
+                responseBody = IOUtils.toString(inputStream); // charset
             }
             checkResponse(statusCode, responseBody);
 
@@ -147,13 +166,13 @@ class DefaultSecurityClient implements SecurityClient {
                 responseCollector.collect(statusCode, responseBody);
             }
             if (isRedirection(statusCode)) {
-                responseCollector.collect(statusCode, post.getResponseHeader("Location").getValue());
+                responseCollector.collect(statusCode, res.getHeaders("Location")[0].getValue());
             }
         } catch (UnknownHostException uhEx) {
             throw new ConfigurationException(String.format("Unknown server: %s", uhEx.getMessage()), uhEx);
         } catch (IOException ioEx) {
             throw new ConfigurationException(String.format("IO Error during method execution [%s] for URL '%s'",
-                    ioEx.getMessage(), createUrlForNotification(post)), ioEx);
+                    ioEx.getMessage()), ioEx);
         } finally {
             post.releaseConnection();
         }

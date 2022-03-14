@@ -16,13 +16,10 @@
 
 package org.codinjutsu.tools.jenkins.security;
 
-import org.apache.commons.httpclient.UsernamePasswordCredentials;
-import org.apache.commons.httpclient.auth.AuthScope;
-import org.apache.commons.httpclient.methods.PostMethod;
-import org.apache.commons.lang.StringUtils;
 import org.apache.http.HttpHeaders;
+import org.apache.http.HttpResponse;
+import org.apache.http.client.methods.HttpPost;
 import org.codinjutsu.tools.jenkins.exception.AuthenticationException;
-import org.codinjutsu.tools.jenkins.exception.ConfigurationException;
 import org.codinjutsu.tools.jenkins.util.IOUtils;
 import org.jetbrains.annotations.Nullable;
 
@@ -39,7 +36,7 @@ class BasicSecurityClient extends DefaultSecurityClient {
 
 
     BasicSecurityClient(String username, String password, String crumbData, int connectionTimout) {
-        super(crumbData, connectionTimout);
+        super(crumbData, username, password, connectionTimout);
         this.username = username;
         this.password = password;
     }
@@ -52,36 +49,59 @@ class BasicSecurityClient extends DefaultSecurityClient {
 
     @Nullable
     private String doAuthentication(URL jenkinsUrl) throws AuthenticationException {
-        if (StringUtils.isNotEmpty(username) && StringUtils.isNotEmpty(password)) {
-            httpClient.getState().setCredentials(
-                    new AuthScope(jenkinsUrl.getHost(), jenkinsUrl.getPort()),
-                    new UsernamePasswordCredentials(username, password));
+        final HttpPost p = new HttpPost(jenkinsUrl.toString());
+        p.addHeader(HttpHeaders.ACCEPT_LANGUAGE, "en-US,en;q=0.5");
+
+        if (isCrumbDataSet()) {
+            p.addHeader(jenkinsVersion.getCrumbName(), crumbData);
         }
-
-        httpClient.getParams().setAuthenticationPreemptive(true);
-
-        PostMethod post = new PostMethod(jenkinsUrl.toString());
-        post.addRequestHeader(HttpHeaders.ACCEPT_LANGUAGE, "en-US,en;q=0.5");
 
         try {
-            if (isCrumbDataSet()) {
-                post.addRequestHeader(jenkinsVersion.getCrumbName(), crumbData);
-            }
-
-            post.setDoAuthentication(true);
-            int responseCode = httpClient.executeMethod(post);
+            HttpResponse response = this.httpClient.execute(p);
             final String responseBody;
-            try(InputStream inputStream = post.getResponseBodyAsStream()) {
-                responseBody = IOUtils.toString(inputStream, post.getResponseCharSet());
+            try(InputStream inputStream = response.getEntity().getContent()) {
+                responseBody = IOUtils.toString(inputStream);
             }
-            if (responseCode != HttpURLConnection.HTTP_OK) {
-                checkResponse(responseCode, responseBody);
+            if (response.getStatusLine().getStatusCode() != HttpURLConnection.HTTP_OK) {
+               checkResponse(response.getStatusLine().getStatusCode(), responseBody);
             }
             return responseBody;
-        } catch (IOException ioEx) {
-            throw new ConfigurationException(String.format("Error during authentication: %s", ioEx.getMessage()), ioEx);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         } finally {
-            post.releaseConnection();
+            p.releaseConnection();
         }
+        //
+//        if (StringUtils.isNotEmpty(username) && StringUtils.isNotEmpty(password)) {
+//            httpClient.getState().setCredentials(
+//                    new AuthScope(jenkinsUrl.getHost(), jenkinsUrl.getPort()),
+//                    new UsernamePasswordCredentials(username, password));
+//        }
+//
+//        httpClient.getParams().setAuthenticationPreemptive(true);
+//
+//        PostMethod post = new PostMethod(jenkinsUrl.toString());
+//        post.addRequestHeader(HttpHeaders.ACCEPT_LANGUAGE, "en-US,en;q=0.5");
+//
+//        try {
+//            if (isCrumbDataSet()) {
+//                post.addRequestHeader(jenkinsVersion.getCrumbName(), crumbData);
+//            }
+//
+//            post.setDoAuthentication(true);
+//            int responseCode = httpClient.executeMethod(post);
+//            final String responseBody;
+//            try(InputStream inputStream = post.getResponseBodyAsStream()) {
+//                responseBody = IOUtils.toString(inputStream, post.getResponseCharSet());
+//            }
+//            if (responseCode != HttpURLConnection.HTTP_OK) {
+//                checkResponse(responseCode, responseBody);
+//            }
+//            return responseBody;
+//        } catch (IOException ioEx) {
+//            throw new ConfigurationException(String.format("Error during authentication: %s", ioEx.getMessage()), ioEx);
+//        } finally {
+//            post.releaseConnection();
+//        }
     }
 }
